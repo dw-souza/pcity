@@ -1,0 +1,749 @@
+openapi: 3.0.3
+info:
+  title: Pcity API
+  description: |
+    API do Pcity — agregador de bares e restaurantes com comodidades da comunidade.
+
+    **Autenticação:** JWT emitido pelo Supabase Auth (`Authorization: Bearer <token>`).
+    Endpoints públicos não exigem token. Contribuições (reportar/confirmar comodidades) exigem login.
+
+    **Cidade piloto (MVP):** Franca, SP (`franca-sp`).
+  version: 0.1.0
+  contact:
+    name: Pcity
+
+servers:
+  - url: http://localhost:8080/v1
+    description: Desenvolvimento local
+  - url: https://api.pcity.app/v1
+    description: Produção
+
+tags:
+  - name: health
+    description: Saúde da API
+  - name: cities
+    description: Cidades indexadas
+  - name: places
+    description: Estabelecimentos
+  - name: amenities
+    description: Catálogo e contribuições de comodidades
+  - name: profile
+    description: Perfil do usuário autenticado
+  - name: admin
+    description: Operações internas (indexação, seed)
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        '200':
+          description: API saudável
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /amenity-types:
+    get:
+      tags: [amenities]
+      summary: Lista catálogo de comodidades
+      operationId: listAmenityTypes
+      responses:
+        '200':
+          description: Catálogo fixo do MVP
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AmenityType'
+
+  /cities/{slug}:
+    get:
+      tags: [cities]
+      summary: Detalhe de uma cidade
+      operationId: getCity
+      parameters:
+        - $ref: '#/components/parameters/citySlug'
+      responses:
+        '200':
+          description: Cidade encontrada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/City'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /cities/{slug}/places:
+    get:
+      tags: [places]
+      summary: Lista lugares de uma cidade
+      description: |
+        Retorna estabelecimentos ativos da cidade, ordenados por distância quando `lat` e `lng` são informados.
+
+        Se a cidade ainda não foi indexada (`indexing_status` = `pending`), a API dispara indexação
+        **síncrona** (pode levar 10–30s na primeira vez) e retorna a lista ao concluir.
+
+        Se `indexing_status` = `in_progress`, retorna `409` com corpo indicando que a indexação está em andamento.
+      operationId: listCityPlaces
+      parameters:
+        - $ref: '#/components/parameters/citySlug'
+        - $ref: '#/components/parameters/lat'
+        - $ref: '#/components/parameters/lng'
+        - $ref: '#/components/parameters/category'
+        - $ref: '#/components/parameters/search'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+      responses:
+        '200':
+          description: Lista de lugares
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaceListResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Indexação em andamento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexingInProgressError'
+
+  /places/{placeId}:
+    get:
+      tags: [places]
+      summary: Detalhe de um lugar
+      operationId: getPlace
+      parameters:
+        - $ref: '#/components/parameters/placeId'
+        - $ref: '#/components/parameters/lat'
+        - $ref: '#/components/parameters/lng'
+      responses:
+        '200':
+          description: Lugar com comodidades
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PlaceDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /places/{placeId}/amenities:
+    post:
+      tags: [amenities]
+      summary: Reportar comodidade em um lugar
+      description: |
+        Cria uma nova comodidade para o lugar. O usuário autenticado conta como primeira confirmação (`confirmation_count = 1`).
+
+        Retorna `409` se a comodidade já existir para o lugar — nesse caso o cliente deve chamar o endpoint de confirmação.
+      operationId: reportPlaceAmenity
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/placeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportAmenityRequest'
+      responses:
+        '201':
+          description: Comodidade reportada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PlaceAmenity'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Comodidade já existe para este lugar
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AmenityAlreadyExistsError'
+
+  /places/{placeId}/amenities/{amenityTypeId}/confirm:
+    post:
+      tags: [amenities]
+      summary: Confirmar comodidade existente
+      description: |
+        Incrementa o contador de confirmações. Rejeitado se o usuário for quem reportou originalmente.
+
+        Quando `confirmation_count` atinge 3, `is_verified` passa a `true`.
+      operationId: confirmPlaceAmenity
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/placeId'
+        - $ref: '#/components/parameters/amenityTypeId'
+      responses:
+        '200':
+          description: Confirmação registrada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PlaceAmenity'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflito (já confirmou, ou é o reportador original)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AlreadyConfirmedError'
+                  - $ref: '#/components/schemas/CannotConfirmOwnReportError'
+
+  /me:
+    get:
+      tags: [profile]
+      summary: Perfil do usuário autenticado
+      operationId: getMyProfile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Perfil
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Profile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    patch:
+      tags: [profile]
+      summary: Atualizar perfil
+      operationId: updateMyProfile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Perfil atualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Profile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /admin/cities/{slug}/index:
+    post:
+      tags: [admin]
+      summary: Disparar indexação de uma cidade
+      description: |
+        Endpoint interno para seed manual (pré-lançamento). Requer API key de admin.
+
+        Indexação síncrona: bloqueia até concluir ou falhar.
+      operationId: indexCity
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/citySlug'
+      responses:
+        '200':
+          description: Indexação concluída
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/CityIndexResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Indexação já em andamento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexingInProgressError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT do Supabase Auth
+    adminKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: Chave interna para operações de seed/indexação
+
+  parameters:
+    citySlug:
+      name: slug
+      in: path
+      required: true
+      description: Identificador da cidade (ex. `franca-sp`)
+      schema:
+        type: string
+        example: franca-sp
+
+    placeId:
+      name: placeId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    amenityTypeId:
+      name: amenityTypeId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/AmenityTypeId'
+
+    lat:
+      name: lat
+      in: query
+      description: Latitude do usuário (para ordenação por distância)
+      schema:
+        type: number
+        format: double
+        minimum: -90
+        maximum: 90
+      example: -20.5386
+
+    lng:
+      name: lng
+      in: query
+      description: Longitude do usuário (para ordenação por distância)
+      schema:
+        type: number
+        format: double
+        minimum: -180
+        maximum: 180
+      example: -47.4008
+
+    category:
+      name: category
+      in: query
+      description: Filtrar por categoria
+      schema:
+        $ref: '#/components/schemas/PlaceCategory'
+
+    search:
+      name: q
+      in: query
+      description: Busca por nome (case-insensitive, parcial)
+      schema:
+        type: string
+        minLength: 2
+        maxLength: 100
+
+    limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+
+    offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+  responses:
+    BadRequest:
+      description: Requisição inválida
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Não autenticado ou token inválido
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Recurso não encontrado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: not_found
+            message:
+              type: string
+              example: Resource not found
+
+    IndexingStatus:
+      type: string
+      enum: [pending, in_progress, completed, failed]
+
+    PlaceSource:
+      type: string
+      enum: [google, user]
+
+    PlaceCategory:
+      type: string
+      enum: [bar, restaurant, cafe, other]
+
+    AmenityTypeId:
+      type: string
+      enum:
+        - kids_area
+        - pet_friendly
+        - outdoor
+        - live_music
+        - parking
+        - wifi
+        - accessible
+
+    GeoPoint:
+      type: object
+      required: [lat, lng]
+      properties:
+        lat:
+          type: number
+          format: double
+        lng:
+          type: number
+          format: double
+
+    City:
+      type: object
+      required:
+        - id
+        - slug
+        - name
+        - state
+        - country
+        - location
+        - indexing_status
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          example: franca-sp
+        name:
+          type: string
+          example: Franca
+        state:
+          type: string
+          example: SP
+        country:
+          type: string
+          example: BR
+        location:
+          $ref: '#/components/schemas/GeoPoint'
+        indexing_status:
+          $ref: '#/components/schemas/IndexingStatus'
+        indexed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    AmenityType:
+      type: object
+      required: [id, label, icon, sort_order]
+      properties:
+        id:
+          $ref: '#/components/schemas/AmenityTypeId'
+        label:
+          type: string
+          example: Espaço kids
+        icon:
+          type: string
+          example: 👶
+        sort_order:
+          type: integer
+
+    PlaceAmenity:
+      type: object
+      required:
+        - id
+        - amenity_type_id
+        - confirmation_count
+        - is_verified
+        - first_reported_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        amenity_type_id:
+          $ref: '#/components/schemas/AmenityTypeId'
+        amenity_type:
+          $ref: '#/components/schemas/AmenityType'
+        confirmation_count:
+          type: integer
+          minimum: 1
+          example: 2
+        is_verified:
+          type: boolean
+        first_reported_at:
+          type: string
+          format: date-time
+        verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        user_has_confirmed:
+          type: boolean
+          description: Presente quando o request é autenticado — indica se o usuário já confirmou
+
+    PlaceSummary:
+      type: object
+      required:
+        - id
+        - name
+        - address
+        - location
+        - category
+        - source
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        address:
+          type: string
+        location:
+          $ref: '#/components/schemas/GeoPoint'
+        phone:
+          type: string
+          nullable: true
+        category:
+          $ref: '#/components/schemas/PlaceCategory'
+        source:
+          $ref: '#/components/schemas/PlaceSource'
+        distance_m:
+          type: number
+          format: double
+          description: Distância em metros (quando lat/lng informados na query)
+          nullable: true
+        amenities:
+          type: array
+          description: Comodidades resumidas para exibição no card da lista
+          items:
+            $ref: '#/components/schemas/PlaceAmenity'
+
+    PlaceDetail:
+      allOf:
+        - $ref: '#/components/schemas/PlaceSummary'
+        - type: object
+          required: [amenities, created_at]
+          properties:
+            website:
+              type: string
+              nullable: true
+            amenities:
+              type: array
+              items:
+                $ref: '#/components/schemas/PlaceAmenity'
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    PlaceListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlaceSummary'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+        city:
+          $ref: '#/components/schemas/City'
+
+    PaginationMeta:
+      type: object
+      required: [limit, offset, total]
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+
+    ReportAmenityRequest:
+      type: object
+      required: [amenity_type_id]
+      properties:
+        amenity_type_id:
+          $ref: '#/components/schemas/AmenityTypeId'
+
+    Profile:
+      type: object
+      required: [id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+
+    CityIndexResult:
+      type: object
+      required:
+        - city
+        - places_imported
+        - indexing_status
+      properties:
+        city:
+          $ref: '#/components/schemas/City'
+        places_imported:
+          type: integer
+          description: Quantidade de lugares importados nesta execução
+        indexing_status:
+          $ref: '#/components/schemas/IndexingStatus'
+
+    IndexingInProgressError:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            error:
+              type: object
+              properties:
+                code:
+                  type: string
+                  enum: [indexing_in_progress]
+                city:
+                  $ref: '#/components/schemas/City'
+
+    AmenityAlreadyExistsError:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            error:
+              type: object
+              properties:
+                code:
+                  type: string
+                  enum: [amenity_already_exists]
+                existing:
+                  $ref: '#/components/schemas/PlaceAmenity'
+
+    AlreadyConfirmedError:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            error:
+              type: object
+              properties:
+                code:
+                  type: string
+                  enum: [already_confirmed]
+
+    CannotConfirmOwnReportError:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            error:
+              type: object
+              properties:
+                code:
+                  type: string
+                  enum: [cannot_confirm_own_report]

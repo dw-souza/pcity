@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: pcity-db
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pcity
+    volumes:
+      - pcity_pgdata:/var/lib/postgresql/data
+      - ./supabase/migrations/000000_auth_stub.sql:/docker-entrypoint-initdb.d/000000_auth_stub.sql:ro
+      - ./supabase/migrations/000001_initial_schema.sql:/docker-entrypoint-initdb.d/000001_initial_schema.sql:ro
+      - ./supabase/seed/dev.sql:/docker-entrypoint-initdb.d/000002_dev_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pcity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pcity_pgdata:
