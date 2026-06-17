@@ -1,0 +1,30 @@
+# Env
+.env
+.env.*
+!.env.example
+
+# Go
+api/bin/
+api/tmp/
+*.exe
+*.test
+*.out
+
+# Node / Expo
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Supabase
+supabase/.branches/
+supabase/.temp/
