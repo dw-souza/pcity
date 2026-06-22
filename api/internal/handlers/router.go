@@ -10,6 +10,7 @@ import (
 
 type API struct {
 	jwtSecret string
+	devAuth   *DevAuthHandler
 
 	health    *HealthHandler
 	cities    *CitiesHandler
@@ -21,6 +22,7 @@ type API struct {
 
 func NewAPI(
 	jwtSecret string,
+	devAuth *DevAuthHandler,
 	health *HealthHandler,
 	cities *CitiesHandler,
 	places *PlacesHandler,
@@ -30,6 +32,7 @@ func NewAPI(
 ) *API {
 	return &API{
 		jwtSecret: jwtSecret,
+		devAuth:   devAuth,
 		health:    health,
 		cities:    cities,
 		places:    places,
@@ -39,7 +42,7 @@ func NewAPI(
 	}
 }
 
-func (a *API) Router(adminKey string) http.Handler {
+func (a *API) Router(adminKey string, devAuthEnabled bool) http.Handler {
 	r := chi.NewRouter()
 	r.Use(chimw.Recoverer)
 	r.Use(middleware.RequestLogger)
@@ -47,6 +50,10 @@ func (a *API) Router(adminKey string) http.Handler {
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", a.health.Get)
 		r.Get("/amenity-types", a.amenities.ListTypes)
+
+		if devAuthEnabled && a.devAuth != nil {
+			r.Post("/dev/auth", a.devAuth.Register)
+		}
 
 		r.Get("/cities/{slug}", a.cities.Get)
 		r.With(middleware.OptionalAuth(a.jwtSecret)).Get("/cities/{slug}/places", a.cities.ListPlaces)

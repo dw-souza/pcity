@@ -57,16 +57,16 @@ A Places API exige billing ativo, mesmo com crédito gratuito.
 
 ## Passo 3 — Ativar a Places API
 
-O Pcity usa a **Places API (legada — Text Search)** via endpoint:
-`https://maps.googleapis.com/maps/api/place/textsearch/json`
+O Pcity usa **Places API (New) — Text Search** via endpoint:
+`POST https://places.googleapis.com/v1/places:searchText`
 
 1. Menu ☰ → **APIs e serviços** → **Biblioteca**
-2. Busque: `Places API`
-3. Ative estas APIs (clique em cada uma → **Ativar**):
-   - **Places API** (necessária para Text Search)
-   - *(Opcional para futuro)* **Places API (New)** — não usada no código atual
+2. Busque: `Places API (New)`
+3. Clique em **Ativar**
 
-**Atalho direto:** [Ativar Places API](https://console.cloud.google.com/apis/library/places-backend.googleapis.com)
+**Atalho direto:** [Ativar Places API (New)](https://console.cloud.google.com/apis/library/places.googleapis.com)
+
+> Não é necessário ativar a Places API legada (`places-backend.googleapis.com`).
 
 ---
 
@@ -96,7 +96,7 @@ Keys sem restrição podem ser usadas por terceiros se vazarem — e geram cobra
    - **Não** use restrição de HTTP referrer para a API Go (isso é para frontends JS no browser)
 3. Em **Restrições de API**:
    - Selecione **Restringir key**
-   - Marque apenas: **Places API**
+   - Marque apenas: **Places API (New)**
 4. **Salvar**
 
 ### Desenvolvimento local com IP dinâmico
@@ -106,7 +106,7 @@ Se seu IP muda (Wi‑Fi doméstico), opções:
 | Opção | Quando usar |
 |---|---|
 | Atualizar IP na restrição | Testes esporádicos |
-| Key separada sem restrição de IP (só Places API) | Dev temporário — **apague depois** |
+| Key separada sem restrição de IP (só Places API (New)) | Dev temporário — **apague depois** |
 | Rodar indexação só em CI/servidor com IP fixo | Mais seguro |
 
 ---
@@ -149,18 +149,23 @@ go run ./cmd/server
 Substitua `SUA_KEY`:
 
 ```bash
-curl "https://maps.googleapis.com/maps/api/place/textsearch/json?query=bares+em+Franca+SP&key=SUA_KEY&language=pt-BR"
+curl -s -X POST 'https://places.googleapis.com/v1/places:searchText' \
+  -H 'Content-Type: application/json' \
+  -H "X-Goog-Api-Key: SUA_KEY" \
+  -H 'X-Goog-FieldMask: places.id,places.displayName,places.formattedAddress,places.location,nextPageToken' \
+  -d '{"textQuery":"bares em Franca, SP, Brasil","languageCode":"pt-BR","pageSize":5}' \
+  | jq '{total: (.places | length), exemplo: .places[0].displayName}'
 ```
 
-Resposta esperada: `"status": "OK"` e lista de `results`.
+Resposta esperada: lista em `places` (campo `displayName.text` com o nome do lugar).
 
 Erros comuns:
 
-| status | Causa | Solução |
+| sinal | Causa | Solução |
 |---|---|---|
-| `REQUEST_DENIED` | Key inválida, API não ativada ou billing inativo | Ver passos 2–4 |
-| `OVER_QUERY_LIMIT` | Cota excedida | Aguardar ou revisar billing |
-| `INVALID_REQUEST` | Query malformada | Verificar URL encoding |
+| `PERMISSION_DENIED` / HTTP 403 | Key inválida, API não ativada ou billing inativo | Ver passos 2–4 |
+| `RESOURCE_EXHAUSTED` | Cota excedida | Aguardar ou revisar billing |
+| `INVALID_ARGUMENT` | FieldMask ausente ou body malformado | Ver curl acima |
 
 ### Indexar Franca pelo Pcity
 
@@ -192,11 +197,13 @@ make psql
 
 ## Estimativa de custo para Franca
 
+A indexação divide a cidade em **grade 3×3** (~9 células de 5 km) e busca **6 categorias** em cada célula (bares, restaurantes, lanchonetes, cafés, pizzarias, hamburguerias). A Google limita **60 resultados por busca**; a grade compensa esse teto para cobrir a cidade inteira.
+
 | Operação | Qtd aproximada | Custo |
 |---|---|---|
-| Text Search (3 queries × ~3 páginas) | ~9 requests | ~US$ 1–3 |
-| Lugares importados (sem Place Details no MVP) | 200–500 | incluído no Text Search |
-| **Total indexação inicial** | | **~US$ 2–5** |
+| Text Search (9 células × 6 categorias × ~2 páginas) | ~100 requests | ~US$ 3–8 |
+| Lugares importados (deduplicados) | 300–600+ | incluído no Text Search |
+| **Total indexação inicial** | | **~US$ 5–10** |
 | Uso mensal após seed | ~0 | Dados ficam no Postgres |
 
 O Pcity **cacheia no banco** — Google Places só é chamado de novo ao indexar **outra cidade**.
@@ -209,7 +216,7 @@ Crédito mensal: **US$ 200** → sobra ampla margem para o MVP.
 
 - [ ] Key apenas em `api/.env` (nunca no mobile, nunca no Git)
 - [ ] `.env` no `.gitignore` ✓ (já configurado)
-- [ ] Restrição de API: só Places API
+- [ ] Restrição de API: só Places API (New)
 - [ ] Restrição de IP em produção
 - [ ] Alerta de budget configurado
 - [ ] Key de dev separada da key de produção (recomendado)
@@ -244,7 +251,7 @@ A variável `GOOGLE_PLACES_API_KEY` está vazia no `api/.env`. Reinicie o servid
 
 ### `indexing_status: failed`
 
-Veja logs da API Go. Causa usual: `REQUEST_DENIED` do Google.
+Veja logs da API Go. Causa usual: `PERMISSION_DENIED` do Google (API (New) não ativada ou key restrita).
 
 ### Quero usar OpenStreetMap em vez do Google
 
@@ -255,7 +262,7 @@ Possível como plano B (Overpass API, gratuito), mas qualidade em cidades menore
 ## Links úteis
 
 - [Google Cloud Console](https://console.cloud.google.com/)
-- [Places API — Text Search](https://developers.google.com/maps/documentation/places/web-service/search-text)
+- [Places API (New) — Text Search](https://developers.google.com/maps/documentation/places/web-service/text-search)
 - [Preços Google Maps Platform](https://mapsplatform.google.com/pricing/)
 - [Credenciais — boas práticas](https://cloud.google.com/docs/authentication/api-keys)
 

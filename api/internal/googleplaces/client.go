@@ -1,22 +1,29 @@
 package googleplaces
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/dw-souza/pcity/api/internal/models"
 )
 
-const textSearchURL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+const (
+	textSearchURL = "https://places.googleapis.com/v1/places:searchText"
+	fieldMask     = "places.id,places.displayName,places.formattedAddress,places.location,places.types,nextPageToken"
+	pageSize      = 20
+	maxPages      = 3
+)
 
 type Client struct {
 	apiKey     string
 	httpClient *http.Client
+	baseURL    string // override in tests
 }
 
 func NewClient(apiKey string) *Client {
@@ -25,35 +32,71 @@ func NewClient(apiKey string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		baseURL: textSearchURL,
 	}
 }
 
-type textSearchResponse struct {
-	Results []struct {
-		PlaceID          string `json:"place_id"`
-		Name             string `json:"name"`
-		FormattedAddress string `json:"formatted_address"`
-		Geometry         struct {
-			Location struct {
-				Lat float64 `json:"lat"`
-				Lng float64 `json:"lng"`
-			} `json:"location"`
-		} `json:"geometry"`
-		Types []string `json:"types"`
-	} `json:"results"`
-	NextPageToken string `json:"next_page_token"`
-	Status        string `json:"status"`
+type searchRequest struct {
+	TextQuery    string         `json:"textQuery"`
+	LanguageCode string         `json:"languageCode"`
+	PageSize     int            `json:"pageSize"`
+	PageToken    string         `json:"pageToken,omitempty"`
+	LocationBias *locationBias  `json:"locationBias,omitempty"`
 }
 
-func (c *Client) SearchPlaces(ctx context.Context, query string) ([]models.ImportedPlace, error) {
+type locationBias struct {
+	Circle circleRestriction `json:"circle"`
+}
+
+type circleRestriction struct {
+	Center struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	} `json:"center"`
+	Radius float64 `json:"radius"`
+}
+
+// AreaSearch biases results toward a circular region (radius in meters).
+type AreaSearch struct {
+	Lat     float64
+	Lng     float64
+	RadiusM float64
+}
+
+type searchResponse struct {
+	Places        []placeResult `json:"places"`
+	NextPageToken string        `json:"nextPageToken"`
+}
+
+type placeResult struct {
+	ID               string `json:"id"`
+	DisplayName      struct {
+		Text string `json:"text"`
+	} `json:"displayName"`
+	FormattedAddress string `json:"formattedAddress"`
+	Location         struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	} `json:"location"`
+	Types []string `json:"types"`
+}
+
+type apiErrorResponse struct {
+	Error struct {
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	} `json:"error"`
+}
+
+func (c *Client) SearchPlaces(ctx context.Context, query string, area *AreaSearch) ([]models.ImportedPlace, error) {
 	if c.apiKey == "" {
 		return nil, fmt.Errorf("google places api key not configured")
 	}
 
 	var all []models.ImportedPlace
 	pageToken := ""
-	for page := 0; page < 3; page++ {
-		results, next, err := c.searchPage(ctx, query, pageToken)
+	for page := 0; page < maxPages; page++ {
+		results, next, err := c.searchPage(ctx, query, pageToken, area)
 		if err != nil {
 			return all, err
 		}
@@ -62,24 +105,37 @@ func (c *Client) SearchPlaces(ctx context.Context, query string) ([]models.Impor
 			break
 		}
 		pageToken = next
-		time.Sleep(2 * time.Second) // Google requires delay before next_page_token
 	}
 	return all, nil
 }
 
-func (c *Client) searchPage(ctx context.Context, query, pageToken string) ([]models.ImportedPlace, string, error) {
-	params := url.Values{}
-	params.Set("query", query)
-	params.Set("key", c.apiKey)
-	params.Set("language", "pt-BR")
-	if pageToken != "" {
-		params.Set("pagetoken", pageToken)
+func (c *Client) searchPage(ctx context.Context, query, pageToken string, area *AreaSearch) ([]models.ImportedPlace, string, error) {
+	reqBody := searchRequest{
+		TextQuery:    query,
+		LanguageCode: "pt-BR",
+		PageSize:     pageSize,
+		PageToken:    pageToken,
+	}
+	if area != nil {
+		bias := &locationBias{}
+		bias.Circle.Center.Latitude = area.Lat
+		bias.Circle.Center.Longitude = area.Lng
+		bias.Circle.Radius = area.RadiusM
+		reqBody.LocationBias = bias
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, textSearchURL+"?"+params.Encode(), nil)
+	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, "", err
 	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Goog-Api-Key", c.apiKey)
+	req.Header.Set("X-Goog-FieldMask", fieldMask)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -87,26 +143,43 @@ func (c *Client) searchPage(ctx context.Context, query, pageToken string) ([]mod
 	}
 	defer resp.Body.Close()
 
-	var body textSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return nil, "", err
 	}
-	if body.Status != "OK" && body.Status != "ZERO_RESULTS" {
-		return nil, "", fmt.Errorf("google places api: %s", body.Status)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", parseAPIError(resp.StatusCode, raw)
 	}
 
-	out := make([]models.ImportedPlace, 0, len(body.Results))
-	for _, r := range body.Results {
+	var parsed searchResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, "", err
+	}
+
+	out := make([]models.ImportedPlace, 0, len(parsed.Places))
+	for _, p := range parsed.Places {
 		out = append(out, models.ImportedPlace{
-			GooglePlaceID: r.PlaceID,
-			Name:          r.Name,
-			Address:       r.FormattedAddress,
-			Lat:           r.Geometry.Location.Lat,
-			Lng:           r.Geometry.Location.Lng,
-			Category:      mapCategory(r.Types),
+			GooglePlaceID: p.ID,
+			Name:          p.DisplayName.Text,
+			Address:       p.FormattedAddress,
+			Lat:           p.Location.Latitude,
+			Lng:           p.Location.Longitude,
+			Category:      mapCategory(p.Types),
 		})
 	}
-	return out, body.NextPageToken, nil
+	return out, parsed.NextPageToken, nil
+}
+
+func parseAPIError(statusCode int, raw []byte) error {
+	var apiErr apiErrorResponse
+	if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error.Message != "" {
+		if apiErr.Error.Status != "" {
+			return fmt.Errorf("google places api: %s: %s", apiErr.Error.Status, apiErr.Error.Message)
+		}
+		return fmt.Errorf("google places api: %s", apiErr.Error.Message)
+	}
+	return fmt.Errorf("google places api: HTTP %d", statusCode)
 }
 
 func mapCategory(types []string) models.PlaceCategory {

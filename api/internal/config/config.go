@@ -12,6 +12,7 @@ type Config struct {
 	SupabaseJWTSecret  string
 	AdminKey           string
 	GooglePlacesAPIKey string
+	DevAuth            bool
 }
 
 func Load() (Config, error) {
@@ -23,6 +24,7 @@ func Load() (Config, error) {
 		SupabaseJWTSecret:  os.Getenv("SUPABASE_JWT_SECRET"),
 		AdminKey:           os.Getenv("ADMIN_KEY"),
 		GooglePlacesAPIKey: os.Getenv("GOOGLE_PLACES_API_KEY"),
+		DevAuth:            os.Getenv("DEV_AUTH") == "true",
 	}
 
 	if cfg.DatabaseURL == "" {

@@ -44,7 +44,7 @@ func (r *Repository) TryClaimIndexing(ctx context.Context, slug string) (models.
 	const q = `
 		UPDATE cities
 		SET indexing_status = 'in_progress', updated_at = now()
-		WHERE slug = $1 AND indexing_status IN ('pending', 'failed')
+		WHERE slug = $1 AND indexing_status IN ('pending', 'failed', 'completed')
 		RETURNING id, slug, name, state, country,
 		          ST_Y(location::geometry), ST_X(location::geometry),
 		          indexing_status, indexed_at`
@@ -71,8 +71,8 @@ func (r *Repository) TryClaimIndexing(ctx context.Context, slug string) (models.
 func (r *Repository) FinishIndexing(ctx context.Context, cityID string, status models.IndexingStatus) (models.City, error) {
 	const q = `
 		UPDATE cities
-		SET indexing_status = $2,
-		    indexed_at = CASE WHEN $2 = 'completed' THEN now() ELSE indexed_at END,
+		SET indexing_status = $2::indexing_status,
+		    indexed_at = CASE WHEN $2::text = 'completed' THEN now() ELSE indexed_at END,
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING id, slug, name, state, country,
@@ -109,7 +109,7 @@ func (r *Repository) ListAmenityTypes(ctx context.Context) ([]models.AmenityType
 
 func (r *Repository) CountPlaces(ctx context.Context, cityID string, category *models.PlaceCategory, search string) (int, error) {
 	where, args := placeFilters(cityID, category, search)
-	const base = `SELECT COUNT(*) FROM places WHERE is_active = true`
+	const base = `SELECT COUNT(*) FROM places p WHERE p.is_active = true`
 	var total int
 	err := r.pool.QueryRow(ctx, base+where, args...).Scan(&total)
 	return total, err
@@ -507,6 +507,25 @@ func (r *Repository) UpdateProfile(ctx context.Context, userID string, displayNa
 		return p, apperrors.ErrNotFound
 	}
 	return p, err
+}
+
+func (r *Repository) UpsertDevUser(ctx context.Context, email, displayName string) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `SELECT id FROM auth.users WHERE email = $1`, email).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = r.pool.QueryRow(ctx, `
+			INSERT INTO auth.users (email, raw_user_meta_data)
+			VALUES ($1, jsonb_build_object('display_name', $2::text))
+			RETURNING id`, email, displayName).Scan(&id)
+		return id, err
+	}
+	if err != nil {
+		return "", err
+	}
+
+	_, err = r.pool.Exec(ctx, `
+		UPDATE profiles SET display_name = $2, updated_at = now() WHERE id = $1`, id, displayName)
+	return id, err
 }
 
 func isUniqueViolation(err error) bool {

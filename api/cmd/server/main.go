@@ -50,6 +50,7 @@ func main() {
 
 	api := handlers.NewAPI(
 		cfg.SupabaseJWTSecret,
+		handlers.NewDevAuthHandler(repo, cfg.SupabaseJWTSecret),
 		handlers.NewHealthHandler(),
 		handlers.NewCitiesHandler(placesSvc),
 		handlers.NewPlacesHandler(placesSvc),
@@ -64,13 +65,13 @@ func main() {
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Admin-Key"},
 		AllowCredentials: false,
 		MaxAge:           300,
-	})(api.Router(cfg.AdminKey))
+	})(api.Router(cfg.AdminKey, cfg.DevAuth))
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 120 * time.Second, // indexação síncrona pode demorar
+		WriteTimeout: 300 * time.Second, // indexação em grade pode demorar
 		IdleTimeout:  60 * time.Second,
 	}
 
