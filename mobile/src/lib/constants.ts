@@ -14,4 +14,5 @@ export const COPY = {
 
 export const STORAGE_KEYS = {
   onboardingSeen: 'pcity_onboarding_seen',
+  devAccessToken: 'pcity_dev_access_token',
 } as const;

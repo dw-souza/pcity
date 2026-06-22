@@ -3,47 +3,123 @@ import { useState } from 'react';
 import { Alert, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { COPY } from '@/lib/constants';
+import { ThemedView } from '@/components/themed-view';
+import { devRegister, supportsDevAuth } from '@/lib/api/dev-auth';
 import { config, isSupabaseConfigured } from '@/lib/config';
 import { getSupabase } from '@/lib/auth';
+import { COPY } from '@/lib/constants';
+import { useTheme } from '@/hooks/use-theme';
+
+type Mode = 'login' | 'register';
 
 export default function LoginScreen() {
   const { returnTo } = useLocalSearchParams<{ returnTo?: string }>();
+  const theme = useTheme();
+  const [mode, setMode] = useState<Mode>('register');
+  const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const devAuth = supportsDevAuth();
 
-  async function onLogin() {
-    if (!isSupabaseConfigured()) {
-      Alert.alert(
-        'Supabase não configurado',
-        'Defina EXPO_PUBLIC_SUPABASE_URL e EXPO_PUBLIC_SUPABASE_ANON_KEY no .env',
-      );
+  function goNext() {
+    if (returnTo && typeof returnTo === 'string') {
+      router.replace(returnTo as `/place/${string}`);
+    } else {
+      router.replace('/');
+    }
+  }
+
+  async function onSubmit() {
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      Alert.alert('E-mail obrigatório', 'Informe seu e-mail.');
+      return;
+    }
+    if (mode === 'register' && !displayName.trim()) {
+      Alert.alert('Nome obrigatório', 'Como você quer aparecer no app?');
+      return;
+    }
+    if (isSupabaseConfigured() && !password) {
+      Alert.alert('Senha obrigatória', 'Informe sua senha.');
       return;
     }
 
     setLoading(true);
     try {
-      const { error } = await getSupabase().auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      if (returnTo && typeof returnTo === 'string') {
-        router.replace(returnTo as `/place/${string}`);
+      if (isSupabaseConfigured()) {
+        if (mode === 'register') {
+          const { error } = await getSupabase().auth.signUp({
+            email: trimmedEmail,
+            password,
+            options: { data: { display_name: displayName.trim() } },
+          });
+          if (error) throw error;
+          Alert.alert('Conta criada', 'Se pedir confirmação por e-mail, confira sua caixa de entrada.');
+        } else {
+          const { error } = await getSupabase().auth.signInWithPassword({
+            email: trimmedEmail,
+            password,
+          });
+          if (error) throw error;
+        }
+      } else if (devAuth) {
+        const name =
+          mode === 'register'
+            ? displayName.trim()
+            : displayName.trim() || trimmedEmail.split('@')[0] || 'Usuário';
+        await devRegister(trimmedEmail, name);
       } else {
-        router.replace('/');
+        Alert.alert(
+          'Auth não configurado',
+          'Configure Supabase no mobile/.env ou DEV_AUTH=true na API.',
+        );
+        return;
       }
+      goNext();
     } catch (e) {
-      Alert.alert('Erro ao entrar', e instanceof Error ? e.message : 'Tente novamente');
+      Alert.alert(
+        mode === 'register' ? 'Erro ao criar conta' : 'Erro ao entrar',
+        e instanceof Error ? e.message : 'Tente novamente',
+      );
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <View style={styles.container}>
-      <ThemedText type="title" style={styles.logo}>
+    <ThemedView style={styles.container}>
+      <ThemedText type="subtitle" style={styles.logo}>
         Pcity
       </ThemedText>
-      <ThemedText style={styles.subtitle}>{COPY.loginCta}</ThemedText>
+      <ThemedText themeColor="textSecondary" style={styles.subtitle}>
+        {COPY.loginCta}
+      </ThemedText>
+
+      <View style={[styles.tabs, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
+        <Pressable
+          style={[styles.tab, mode === 'login' && { backgroundColor: theme.backgroundSelected }]}
+          onPress={() => setMode('login')}
+        >
+          <ThemedText type="smallBold">Entrar</ThemedText>
+        </Pressable>
+        <Pressable
+          style={[styles.tab, mode === 'register' && { backgroundColor: theme.backgroundSelected }]}
+          onPress={() => setMode('register')}
+        >
+          <ThemedText type="smallBold">Criar conta</ThemedText>
+        </Pressable>
+      </View>
+
+      {mode === 'register' || !devAuth ? (
+        <TextInput
+          placeholder="Seu nome"
+          value={displayName}
+          onChangeText={setDisplayName}
+          style={[styles.input, { borderColor: theme.border, color: theme.text }]}
+          placeholderTextColor={theme.textSecondary}
+        />
+      ) : null}
 
       <TextInput
         placeholder="E-mail"
@@ -51,54 +127,70 @@ export default function LoginScreen() {
         keyboardType="email-address"
         value={email}
         onChangeText={setEmail}
-        style={styles.input}
-      />
-      <TextInput
-        placeholder="Senha"
-        secureTextEntry
-        value={password}
-        onChangeText={setPassword}
-        style={styles.input}
+        style={[styles.input, { borderColor: theme.border, color: theme.text }]}
+        placeholderTextColor={theme.textSecondary}
       />
 
+      {isSupabaseConfigured() ? (
+        <TextInput
+          placeholder="Senha"
+          secureTextEntry
+          value={password}
+          onChangeText={setPassword}
+          style={[styles.input, { borderColor: theme.border, color: theme.text }]}
+          placeholderTextColor={theme.textSecondary}
+        />
+      ) : null}
+
       <Pressable
-        style={[styles.button, loading && styles.disabled]}
-        onPress={() => void onLogin()}
+        style={[styles.button, { backgroundColor: theme.primary }, loading && styles.disabled]}
+        onPress={() => void onSubmit()}
         disabled={loading}
       >
         <ThemedText type="defaultSemiBold" style={styles.buttonText}>
-          {loading ? 'Entrando...' : 'Entrar'}
+          {loading ? 'Aguarde...' : mode === 'register' ? 'Criar conta' : 'Entrar'}
         </ThemedText>
       </Pressable>
 
-      {!isSupabaseConfigured() ? (
+      {devAuth ? (
         <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
-          Dev sem Supabase: API em {config.apiUrl}
+          Dev local: conta salva no Postgres via {config.apiUrl}/dev/auth
         </ThemedText>
       ) : null}
-    </View>
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 24, justifyContent: 'center', gap: 12 },
-  logo: { textAlign: 'center', marginBottom: 8 },
-  subtitle: { textAlign: 'center', marginBottom: 16 },
+  logo: { textAlign: 'center', fontSize: 32, lineHeight: 38 },
+  subtitle: { textAlign: 'center', marginBottom: 8 },
+  tabs: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 4,
+    gap: 4,
+  },
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
   input: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#ccc',
-    borderRadius: 10,
-    padding: 12,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
     fontSize: 16,
   },
   button: {
-    backgroundColor: '#f97316',
-    padding: 14,
-    borderRadius: 12,
+    padding: 16,
+    borderRadius: 14,
     alignItems: 'center',
     marginTop: 8,
   },
   disabled: { opacity: 0.6 },
   buttonText: { color: '#fff' },
-  hint: { textAlign: 'center', marginTop: 16 },
+  hint: { textAlign: 'center', marginTop: 8, lineHeight: 20 },
 });

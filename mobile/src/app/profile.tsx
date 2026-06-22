@@ -3,24 +3,25 @@ import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { getSession, getSupabase } from '@/lib/auth';
-import { isSupabaseConfigured } from '@/lib/config';
-import type { Profile } from '@/lib/types/api';
+import { ThemedView } from '@/components/themed-view';
+import { useTheme } from '@/hooks/use-theme';
 import { apiData, apiRequest } from '@/lib/api/client';
+import { getAccessToken, isLoggedIn, signOut } from '@/lib/auth';
+import type { Profile } from '@/lib/types/api';
 
 export default function ProfileScreen() {
+  const theme = useTheme();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loggedIn, setLoggedIn] = useState(false);
 
   useEffect(() => {
     void (async () => {
-      const session = await getSession();
-      setLoggedIn(Boolean(session));
-      if (session) {
+      const ok = await isLoggedIn();
+      setLoggedIn(ok);
+      if (ok) {
         try {
-          const json = await apiRequest<{ data: Profile }>('/me', {
-            token: session.access_token,
-          });
+          const token = await getAccessToken();
+          const json = await apiRequest<{ data: Profile }>('/me', { token });
           setProfile(apiData(json));
         } catch {
           setProfile(null);
@@ -30,9 +31,7 @@ export default function ProfileScreen() {
   }, []);
 
   async function onSignOut() {
-    if (isSupabaseConfigured()) {
-      await getSupabase().auth.signOut();
-    }
+    await signOut();
     setLoggedIn(false);
     setProfile(null);
     router.replace('/');
@@ -40,24 +39,33 @@ export default function ProfileScreen() {
 
   if (!loggedIn) {
     return (
-      <View style={styles.container}>
+      <ThemedView style={styles.container}>
         <ThemedText style={styles.message}>Entre para contribuir com o que os lugares têm.</ThemedText>
-        <Pressable style={styles.button} onPress={() => router.push('/auth/login')}>
+        <Pressable
+          style={[styles.button, { backgroundColor: theme.primary }]}
+          onPress={() => router.push('/auth/login')}
+        >
           <ThemedText type="defaultSemiBold" style={styles.buttonText}>
-            Entrar
+            Entrar ou criar conta
           </ThemedText>
         </Pressable>
-      </View>
+      </ThemedView>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <ThemedText type="title">{profile?.display_name ?? 'Usuário'}</ThemedText>
-      <Pressable style={styles.outline} onPress={() => void onSignOut()}>
+    <ThemedView style={styles.container}>
+      <ThemedText type="subtitle">{profile?.display_name ?? 'Usuário'}</ThemedText>
+      <ThemedText themeColor="textSecondary">
+        Você pode reportar e confirmar comodidades nos lugares.
+      </ThemedText>
+      <Pressable
+        style={[styles.outline, { borderColor: theme.border }]}
+        onPress={() => void onSignOut()}
+      >
         <ThemedText>Sair</ThemedText>
       </Pressable>
-    </View>
+    </ThemedView>
   );
 }
 
@@ -65,7 +73,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, padding: 24, gap: 16 },
   message: { textAlign: 'center', marginTop: 40 },
   button: {
-    backgroundColor: '#f97316',
     padding: 14,
     borderRadius: 12,
     alignItems: 'center',
@@ -76,7 +83,6 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#ccc',
     alignItems: 'center',
   },
 });

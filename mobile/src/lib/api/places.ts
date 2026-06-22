@@ -6,6 +6,7 @@ type ListParams = {
   lat?: number;
   lng?: number;
   q?: string;
+  category?: string;
   limit?: number;
   offset?: number;
   token?: string | null;
@@ -16,6 +17,7 @@ export async function listCityPlaces(params: ListParams = {}): Promise<PlaceList
   if (params.lat != null) search.set('lat', String(params.lat));
   if (params.lng != null) search.set('lng', String(params.lng));
   if (params.q) search.set('q', params.q);
+  if (params.category) search.set('category', params.category);
   if (params.limit != null) search.set('limit', String(params.limit));
   if (params.offset != null) search.set('offset', String(params.offset));
 
